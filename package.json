@@ -1,0 +1,12 @@
+{
+  "name": "meetino",
+  "version": "1.0.0",
+  "description": "Find friends, meet people",
+  "license": "ISC",
+  "author": "Patrik Nagy",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "test": "node main.js"
+  }
+}
