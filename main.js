@@ -9,8 +9,24 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const mariadb = require('mariadb');
 const cors = require('cors');
+const winston = require('winston');
 
 const saltRounds = 10;
+
+// Configure winston logger
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => {
+      return `${timestamp} [${level.toUpperCase()}]: ${message}`;
+    })
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'app.log' })
+  ]
+});
 
 // Create Socket.IO instance and pass HTTP server
 const io = require('socket.io')(http, {
@@ -48,9 +64,9 @@ async function connectToDatabase() {
   let conn;
   try {
     conn = await pool.getConnection();
-    console.log('Connected to MariaDB!');
+    logger.info('Connected to MariaDB!');
   } catch (err) {
-    console.error('Error connecting to MariaDB:', err);
+    logger.error('Error connecting to MariaDB:', err);
   } finally {
     if (conn) conn.release(); // release to pool
   }
@@ -74,10 +90,10 @@ app.post('/setup-database', async (req, res) => {
   try {
     conn = await pool.getConnection();
     await conn.query(sql);
-    console.log('Users table created!');
+    logger.info('Users table created!');
     res.json({ message: 'Database tables created!' });
   } catch (err) {
-    console.error('Error creating users table:', err);
+    logger.error('Error creating users table:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -109,12 +125,12 @@ app.post('/register', async (req, res) => {
 
     conn = await pool.getConnection();
     await conn.query(sql, values);
-    console.log(`User ${username} registered!`);
+    logger.info(`User ${username} registered!`);
 
     const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
     res.json({ token });
   } catch (err) {
-    console.error('Error inserting user into database:', err);
+    logger.error('Error inserting user into database:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -134,22 +150,22 @@ app.post('/login', async (req, res) => {
     const result = await conn.query(sql, values);
 
     if (result.length === 0) {
-      console.log(`User ${username} not found!`);
+      logger.info(`User ${username} not found!`);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
     const passwordMatch = await bcrypt.compare(password, result[0].password);
     if (!passwordMatch) {
-      console.log(`Invalid password for user ${username}!`);
+      logger.info(`Invalid password for user ${username}!`);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    console.log(`User ${username} logged in!`);
+    logger.info(`User ${username} logged in!`);
 
     const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
     res.json({ token });
   } catch (err) {
-    console.error('Error getting user data from database:', err);
+    logger.error('Error getting user data from database:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -192,7 +208,7 @@ app.post('/add-friend', authenticateToken, async (req, res) => {
 
     res.status(200).json({ message: 'Friend added successfully' });
   } catch (err) {
-    console.error('Error adding friend:', err);
+    logger.error('Error adding friend:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -224,7 +240,7 @@ app.get('/search-users', authenticateToken, async (req, res) => {
     // Return the list of usernames that match the search query
     res.status(200).json(result);  // Sending back the list of users
   } catch (err) {
-    console.error('Error searching for users:', err);
+    logger.error('Error searching for users:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -232,7 +248,7 @@ app.get('/search-users', authenticateToken, async (req, res) => {
 });
 
 app.put('/profile', authenticateToken, async (req, res) => {
-  console.log("Updating profile...");
+  logger.info("Updating profile...");
   const username = req.user.username;
   const { bio, profile_picture_url } = req.body;
 
@@ -257,7 +273,7 @@ app.put('/profile', authenticateToken, async (req, res) => {
 
     res.status(200).json({ message: 'Profile updated successfully' });
   } catch (err) {
-    console.error('Error updating profile:', err);
+    logger.error('Error updating profile:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -300,7 +316,7 @@ app.put('/add-friend', authenticateToken, async (req, res) => {
 
     res.status(200).json({ message: 'Friend added successfully' });
   } catch (err) {
-    console.error('Error adding friend:', err);
+    logger.error('Error adding friend:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -335,7 +351,7 @@ app.get('/profile', authenticateToken, async (req, res) => {
       favorites,
     });
   } catch (err) {
-    console.error('Error fetching profile:', err);
+    logger.error('Error fetching profile:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -360,13 +376,13 @@ app.get('/socket.io', (req, res) => {
 
 // Start HTTP server
 http.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  logger.info(`Server running on port ${port}`);
 });
 
 let socketUserMap = {}; // Store socketId -> username mapping
 
 io.on('connection', function (socket) {
-  console.log('A user has connected! Socket ID:', socket.id);
+  logger.info(`A user has connected! Socket ID: ${socket.id}`);
 
   // Send previous messages to the client
   socket.emit('previous-messages', messages);
@@ -374,7 +390,7 @@ io.on('connection', function (socket) {
   // When a user joins, store the username with the socket ID
   socket.on('set-username', async (username) => {
     socketUserMap[socket.id] = username; // Store the username with the socket id
-    console.log(`${username} is connected with Socket ID: ${socket.id}`);
+    logger.info(`${username} is connected with Socket ID: ${socket.id}`);
 
     let conn;
     try {
@@ -382,7 +398,7 @@ io.on('connection', function (socket) {
       const userResult = await conn.query('SELECT id FROM users WHERE username = ?', [username]);
 
       if (userResult.length === 0) {
-        console.error('User not found!');
+        logger.error('User not found!');
         return;
       }
 
@@ -390,11 +406,11 @@ io.on('connection', function (socket) {
       const [profile] = await conn.query('SELECT * FROM users WHERE id = ?', [userId]);
 
       if (profile) {
-        console.log('Sending user profile:', profile);
+        logger.info('Sending user profile:', profile);
         socket.emit('user-profile', profile);
       }
     } catch (err) {
-      console.error('Error fetching profile:', err);
+      logger.error('Error fetching profile:', err);
     } finally {
       if (conn) conn.release();
     }
@@ -402,7 +418,7 @@ io.on('connection', function (socket) {
 
   // Handle messages
   socket.on('msg-event', function (msg_content) {
-    console.log('Message:', msg_content.message, 'Target:', msg_content.target);
+    logger.info(`Message: ${msg_content.message}, Target: ${msg_content.target}`);
 
     msg_content.sender = msg_content.sender || "Unknown User";  // Default to "Unknown User" if no sender provided
 
@@ -412,19 +428,19 @@ io.on('connection', function (socket) {
       const targetSocketId = Object.keys(socketUserMap).find(socketId => socketUserMap[socketId] === msg_content.target);
 
       if (targetSocketId) {
-        console.log(`Sending message to target: ${msg_content.target}`);
+        logger.info(`Sending message to target: ${msg_content.target}`);
         socket.to(targetSocketId).emit('msg-event', msg_content);
       } else {
-        console.log(`Target username not found: ${msg_content.target}`);
+        logger.info(`Target username not found: ${msg_content.target}`);
       }
     } else {
-      console.log('Broadcasting message to all clients');
+      logger.info('Broadcasting message to all clients');
       io.emit('msg-event', msg_content);
     }
   });
 
   socket.on('disconnect', function () {
-    console.log('User disconnected');
+    logger.info('User disconnected');
     delete socketUserMap[socket.id]; // Remove the user from the map
   });
 });
