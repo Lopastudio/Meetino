@@ -1,42 +1,44 @@
-const express = require('express');
-require('dotenv').config();
-const app = express();
-const http = require('http').createServer(app);
-const port = process.env.PORT;
+// hours wasted: 7
+// Made by Patrik (Lopastudio)
+// Github: https://github.com/Lopastudio/
 
+const express = require('express');
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const mysql = require('mysql');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const { app, saltRounds, connection } = require('./LoginBackend');
+const secret_key = "your_secret_key"; //change this if you don't want to get hacked :)
+
+const app = express();
+exports.app = app;
+app.use(cors());
 
 const saltRounds = 10;
-
-const io = require('socket.io')(http);
+exports.saltRounds = saltRounds;
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
+//database login information
+const connection  = mysql.createConnection({
+    host: '',
+    user: '',
+    password: '',
+    database: ''
+  });
+exports.connection = connection;
 
-// database-login
-const connection = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
-});
-
+//connecting to the database
 connection.connect((err) => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL!');
+  if (err) {
+    console.error('Error connecting to MySQL:', err);
+    return;
+  }
+  console.log('Connected to MySQL!');
 });
 
+//setting up databases based on predefined stuff (email, username, password, favourites (TEXT))
 app.post('/setup-database', (req, res) => {
     const sql = `
         CREATE TABLE IF NOT EXISTS users (
@@ -60,7 +62,7 @@ app.post('/setup-database', (req, res) => {
       res.json({ message: 'Database tables created!' });
     });
   });
-
+  
 //Register API
 app.post('/register', (req, res) => {
   const { email, username, password, favorites } = req.body;
@@ -135,50 +137,5 @@ app.post('/login', (req, res) => {
   });
 });
 
-let messages = []; // Array to store messages
-
-app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/public/index.html');
-});
-
-app.get('/socket.io', (req, res) => {
-    res.sendFile(__dirname + '/public/socket.io.js');
-});
-
-http.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
-
-io.on('connection', function(socket) {
-    console.log('A user has connected! Socket ID:', socket.id);
-
-    // Send stored messages to the newly connected client
-    socket.emit('previous-messages', messages);
-
-    socket.on('disconnect', function() {
-        console.log('User disconnected');
-    });
-
-    socket.on('get-username', function() {
-        socket.emit({username: "sigma_boy"});
-    });
-
-    socket.on('msg-event', function(msg_content) {
-        console.log('Message:', msg_content.message, 'Target:', msg_content.target);
-        
-        // Add sender's socket ID to the message content
-        msg_content.sender = socket.id;
-
-        // Save the message to the array
-        messages.push(msg_content);
-
-        if (msg_content.target) {
-            console.log(`Sending message to target: ${msg_content.target}`);
-            socket.to(msg_content.target).emit('msg-event', msg_content);
-        } else {
-            console.log('Broadcasting message to all clients');
-            io.emit('msg-event', msg_content); // Send to all, including sender
-        }
-    });
-    
-});
+//Finally, RUN IT!
+app.listen(3050, () => console.log('Server started on port 3050!'));
