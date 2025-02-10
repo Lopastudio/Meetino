@@ -1,184 +1,431 @@
 const express = require('express');
 require('dotenv').config();
 const app = express();
-const http = require('http').createServer(app);
-const port = process.env.PORT;
+const http = require('http').createServer(app);  // Create HTTP server
+const port = process.env.PORT || 3000;
 
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const mysql = require('mysql');
+const mariadb = require('mariadb');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const { app, saltRounds, connection } = require('./LoginBackend');
 
 const saltRounds = 10;
 
-const io = require('socket.io')(http);
+// Create Socket.IO instance and pass HTTP server
+const io = require('socket.io')(http, {
+  cors: {
+    origin: "http://localhost:5173", // Allow the frontend to connect
+    methods: ["GET", "POST", "PUT"], // Allow GET, POST, PUT requests
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, // Allow credentials (cookies, authorization headers)
+  },
+});
+
+app.use(
+  cors({
+    origin: "http://localhost:5173", // Allow frontend origin
+    methods: ["GET", "POST", "PUT"], // Allow PUT, GET, POST methods
+    allowedHeaders: ["Content-Type", "Authorization"], // Allow necessary headers
+    credentials: true, // Allow credentials like cookies and tokens
+  })
+);
+
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-
-// database-login
-const connection = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME
+// Database login
+const pool = mariadb.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  connectionLimit: 10 // Increase the connection limit
 });
 
-connection.connect((err) => {
-    if (err) {
-        console.error('Error connecting to MySQL:', err);
-        return;
-    }
-    console.log('Connected to MySQL!');
+async function connectToDatabase() {
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    console.log('Connected to MariaDB!');
+  } catch (err) {
+    console.error('Error connecting to MariaDB:', err);
+  } finally {
+    if (conn) conn.release(); // release to pool
+  }
+}
+
+connectToDatabase();
+
+app.post('/setup-database', async (req, res) => {
+  const sql = `
+    CREATE TABLE IF NOT EXISTS users (
+      id INT(11) NOT NULL AUTO_INCREMENT,
+      email VARCHAR(255) NOT NULL,
+      username VARCHAR(191) NOT NULL,
+      password VARCHAR(255) NOT NULL,
+      favorites TEXT,
+      PRIMARY KEY (id),
+      UNIQUE KEY (username)
+    );
+  `;
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    await conn.query(sql);
+    console.log('Users table created!');
+    res.json({ message: 'Database tables created!' });
+  } catch (err) {
+    console.error('Error creating users table:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
 });
 
-app.post('/setup-database', (req, res) => {
-    const sql = `
-        CREATE TABLE IF NOT EXISTS users (
-            id INT(11) NOT NULL AUTO_INCREMENT,
-            email VARCHAR(255) NOT NULL,
-            username VARCHAR(191) NOT NULL,
-            password VARCHAR(255) NOT NULL,
-            favorites TEXT,
-            PRIMARY KEY (id),
-            UNIQUE KEY (username)
-        );
-    `;
-    //error handling
-    connection.query(sql, (err, result) => {
-      if (err) {
-        console.error('Error creating users table:', err);
-        return res.status(500).json({ error: 'Internal server error' });
-      }
-      //the think everyone wants to see
-      console.log('Users table created!');
-      res.json({ message: 'Database tables created!' });
-    });
+// Middleware to verify JWT token
+const authenticateToken = (req, res, next) => {
+  const token = req.headers['authorization'] && req.headers['authorization'].split(' ')[1]; // Extract token from Authorization header
+
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+
+  jwt.verify(token, 'secret_key', (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    req.user = user; // Attach user info to the request
+    next(); // Proceed to the next middleware or route handler
   });
+};
 
-//Register API
-app.post('/register', (req, res) => {
+// Register route
+app.post('/register', async (req, res) => {
   const { email, username, password, favorites } = req.body;
 
-  //Encrypting user password
-  bcrypt.hash(password, saltRounds, (err, hashedPassword) => {
-    if (err) {
-      console.error('Error encrypting password:', err);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-
-    //Insert user data into database
+  let conn;
+  try {
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
     const sql = 'INSERT INTO users (email, username, password, favorites) VALUES (?, ?, ?, ?)';
     const values = [email, username, hashedPassword, favorites];
 
-    //error handling
-    connection.query(sql, values, (err, result) => {
-      if (err) {
-        console.error('Error inserting user into database:', err);
-        return res.status(500).json({ error: 'Internal server error' });
-      }
-      //logging
-      console.log(`User ${username} registered!`);
+    conn = await pool.getConnection();
+    await conn.query(sql, values);
+    console.log(`User ${username} registered!`);
 
-      // Create JWT token
-      const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
-
-      res.json({ token });
-    });
-  });
+    const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
+    res.json({ token });
+  } catch (err) {
+    console.error('Error inserting user into database:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
 });
 
-// Login API
-app.post('/login', (req, res) => {
+// Login route
+app.post('/login', async (req, res) => {
   const { username, password } = req.body;
 
-  // Get user data from database
   const sql = 'SELECT * FROM users WHERE username = ?';
   const values = [username];
-  //error handling
-  connection.query(sql, values, (err, result) => {
-    if (err) {
-      console.error('Error getting user data from database:', err);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const result = await conn.query(sql, values);
 
     if (result.length === 0) {
       console.log(`User ${username} not found!`);
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    // Compare recieved password with the password located in the database
-    bcrypt.compare(password, result[0].password, (err, passwordMatch) => {
-      //error handling
-      if (err) {
-        console.error('Error comparing passwords:', err);
-        return res.status(500).json({ error: 'Internal server error' });
-      }
+    const passwordMatch = await bcrypt.compare(password, result[0].password);
+    if (!passwordMatch) {
+      console.log(`Invalid password for user ${username}!`);
+      return res.status(401).json({ error: 'Invalid username or password' });
+    }
 
-      if (!passwordMatch) {
-        console.log(`Invalid password for user ${username}!`);
-        return res.status(401).json({ error: 'Invalid username or password' });
-      }
+    console.log(`User ${username} logged in!`);
 
-      console.log(`User ${username} logged in!`);
-
-      // Create JWT token
-      const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
-
-      res.json({ token });
-    });
-  });
+    const token = jwt.sign({ username }, 'secret_key', { expiresIn: '1h' });
+    res.json({ token });
+  } catch (err) {
+    console.error('Error getting user data from database:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
 });
 
-let messages = []; // Array to store messages
 
+// Route to add a friend to the user's favorites list
+app.post('/add-friend', authenticateToken, async (req, res) => {
+  const { friendUsername } = req.body;  // Username of the user to add as a friend
+  const username = req.user.username;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Get the user to add as a friend
+    const [friend] = await conn.query('SELECT id FROM users WHERE username = ?', [friendUsername]);
+
+    if (friend.length === 0) {
+      return res.status(404).json({ error: 'Friend not found' });
+    }
+
+    // Get the current user's favorites (friends list)
+    const [user] = await conn.query('SELECT favorites FROM users WHERE username = ?', [username]);
+
+    if (user.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const favorites = user[0].favorites ? JSON.parse(user[0].favorites) : [];
+
+    // Add the new friend to the favorites list if not already added
+    if (!favorites.includes(friendUsername)) {
+      favorites.push(friendUsername);
+    }
+
+    // Update the user's favorites list in the database
+    await conn.query('UPDATE users SET favorites = ? WHERE username = ?', [JSON.stringify(favorites), username]);
+
+    res.status(200).json({ message: 'Friend added successfully' });
+  } catch (err) {
+    console.error('Error adding friend:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+// Route to search for users by username
+app.get('/search-users', authenticateToken, async (req, res) => {
+  const { query } = req.query; // Get the search query from the request
+
+  if (!query) {
+    return res.status(400).json({ error: 'Search query is required' });
+  }
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Query the database for users whose usernames match the search query
+    const sql = 'SELECT username FROM users WHERE username LIKE ? LIMIT 10';  // Limit to 10 results
+    const values = [`%${query}%`];  // Use % for partial matching
+
+    const result = await conn.query(sql, values);
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: 'No users found' });
+    }
+
+    // Return the list of usernames that match the search query
+    res.status(200).json(result);  // Sending back the list of users
+  } catch (err) {
+    console.error('Error searching for users:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+app.put('/profile', authenticateToken, async (req, res) => {
+  console.log("Updating profile...");
+  const username = req.user.username;
+  const { bio, profile_picture_url } = req.body;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const userResult = await conn.query('SELECT id FROM users WHERE username = ?', [username]);
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userId = userResult[0].id;
+
+    const sql = `
+      UPDATE users 
+      SET bio = ?, profile_picture_url = ?
+      WHERE id = ?
+    `;
+    const values = [bio, profile_picture_url, userId]; 
+
+    await conn.query(sql, values);
+
+    res.status(200).json({ message: 'Profile updated successfully' });
+  } catch (err) {
+    console.error('Error updating profile:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+
+// Assuming you have a function to handle adding friends
+app.put('/add-friend', authenticateToken, async (req, res) => {
+  const { friendUsername } = req.body; // Friend username to add
+  const username = req.user.username;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const userResult = await conn.query('SELECT id, favorites FROM users WHERE username = ?', [username]);
+
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userId = userResult[0].id;
+    let favorites = userResult[0].favorites || '[]';  // Ensure it's initialized as an empty array if undefined
+
+    const friendResult = await conn.query('SELECT id FROM users WHERE username = ?', [friendUsername]);
+    if (friendResult.length === 0) {
+      return res.status(404).json({ error: 'Friend not found' });
+    }
+
+    // Add friend to favorites (if not already added)
+    const favoriteList = JSON.parse(favorites);
+    if (!favoriteList.includes(friendUsername)) {
+      favoriteList.push(friendUsername);
+    }
+
+    favorites = JSON.stringify(favoriteList);  // Convert back to string for storage
+
+    await conn.query('UPDATE users SET favorites = ? WHERE id = ?', [favorites, userId]);
+
+    res.status(200).json({ message: 'Friend added successfully' });
+  } catch (err) {
+    console.error('Error adding friend:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+// Route to get the user's profile
+app.get('/profile', authenticateToken, async (req, res) => {
+  const username = req.user.username;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    // Modify the query to fetch profile_picture_url and bio along with favorites
+    const userResult = await conn.query(
+      'SELECT id, favorites, bio, profile_picture_url FROM users WHERE username = ?',
+      [username]
+    );
+
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult[0];
+    const favorites = user.favorites ? JSON.parse(user.favorites) : [];
+
+    // Return the profile with the bio, profile_picture_url, and updated favorites list
+    res.status(200).json({
+      bio: user.bio || '', // If bio is null, return an empty string
+      profile_picture_url: user.profile_picture_url || '', // If no profile picture, return empty string
+      favorites,
+    });
+  } catch (err) {
+    console.error('Error fetching profile:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+// Auth route to validate the JWT token
+app.get('/auth', authenticateToken, (req, res) => {
+  res.json({ user: req.user }); // Respond with the user object if token is valid
+});
+
+// Socket.IO connections
+let messages = []; // Array to store messages
 app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/public/index.html');
+  res.sendFile(__dirname + '/public/index.html');
 });
 
 app.get('/socket.io', (req, res) => {
-    res.sendFile(__dirname + '/public/socket.io.js');
+  res.sendFile(__dirname + '/public/socket.io.js');
 });
 
+// Start HTTP server
 http.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
 
-io.on('connection', function(socket) {
-    console.log('A user has connected! Socket ID:', socket.id);
+let socketUserMap = {}; // Store socketId -> username mapping
 
-    // Send stored messages to the newly connected client
-    socket.emit('previous-messages', messages);
+io.on('connection', function (socket) {
+  console.log('A user has connected! Socket ID:', socket.id);
 
-    socket.on('disconnect', function() {
-        console.log('User disconnected');
-    });
+  // Send previous messages to the client
+  socket.emit('previous-messages', messages);
 
-    socket.on('get-username', function() {
-        socket.emit({username: "sigma_boy"});
-    });
+  // When a user joins, store the username with the socket ID
+  socket.on('set-username', async (username) => {
+    socketUserMap[socket.id] = username; // Store the username with the socket id
+    console.log(`${username} is connected with Socket ID: ${socket.id}`);
 
-    socket.on('msg-event', function(msg_content) {
-        console.log('Message:', msg_content.message, 'Target:', msg_content.target);
-        
-        // Add sender's socket ID to the message content
-        msg_content.sender = socket.id;
+    let conn;
+    try {
+      conn = await pool.getConnection();
+      const userResult = await conn.query('SELECT id FROM users WHERE username = ?', [username]);
 
-        // Save the message to the array
-        messages.push(msg_content);
+      if (userResult.length === 0) {
+        console.error('User not found!');
+        return;
+      }
 
-        if (msg_content.target) {
-            console.log(`Sending message to target: ${msg_content.target}`);
-            socket.to(msg_content.target).emit('msg-event', msg_content);
-        } else {
-            console.log('Broadcasting message to all clients');
-            io.emit('msg-event', msg_content); // Send to all, including sender
-        }
-    });
-    
+      const userId = userResult[0].id;
+      const [profile] = await conn.query('SELECT * FROM users WHERE id = ?', [userId]);
+
+      if (profile) {
+        console.log('Sending user profile:', profile);
+        socket.emit('user-profile', profile);
+      }
+    } catch (err) {
+      console.error('Error fetching profile:', err);
+    } finally {
+      if (conn) conn.release();
+    }
+  });
+
+  // Handle messages
+  socket.on('msg-event', function (msg_content) {
+    console.log('Message:', msg_content.message, 'Target:', msg_content.target);
+
+    msg_content.sender = msg_content.sender || "Unknown User";  // Default to "Unknown User" if no sender provided
+
+    messages.push(msg_content);
+
+    if (msg_content.target) {
+      const targetSocketId = Object.keys(socketUserMap).find(socketId => socketUserMap[socketId] === msg_content.target);
+
+      if (targetSocketId) {
+        console.log(`Sending message to target: ${msg_content.target}`);
+        socket.to(targetSocketId).emit('msg-event', msg_content);
+      } else {
+        console.log(`Target username not found: ${msg_content.target}`);
+      }
+    } else {
+      console.log('Broadcasting message to all clients');
+      io.emit('msg-event', msg_content);
+    }
+  });
+
+  socket.on('disconnect', function () {
+    console.log('User disconnected');
+    delete socketUserMap[socket.id]; // Remove the user from the map
+  });
 });
+
