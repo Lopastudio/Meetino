@@ -1,80 +1,51 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const connectDB = require('./config/db');
-const authRoutes = require('./routes/auth');
-const roomRoutes = require('./routes/rooms');
-const messageRoutes = require('./routes/messages');
-const cors = require('cors');
-
+require('dotenv').config();
 const app = express();
-const server = http.createServer(app);
+const http = require('http').createServer(app);
+const port = process.env.PORT;
 
-const allowedOrigins = [
-    "http://localhost:3000",  // Localhost
-    "http://192.168.1.118:3000"  // Local network IP
-];
+const io = require('socket.io')(http);
 
-app.use(cors({
-    origin: function (origin, callback) {
-        if (allowedOrigins.includes(origin) || !origin) {
-            callback(null, true);  // Allow the origin
+let messages = []; // Array to store messages
+
+app.get('/', (req, res) => {
+    res.sendFile(__dirname + '/public/index.html');
+});
+
+app.get('/socket.io', (req, res) => {
+    res.sendFile(__dirname + '/public/socket.io.js');
+});
+
+http.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
+
+io.on('connection', function(socket) {
+    console.log('A user has connected! Socket ID:', socket.id);
+
+    // Send stored messages to the newly connected client
+    socket.emit('previous-messages', messages);
+
+    socket.on('disconnect', function() {
+        console.log('User disconnected');
+    });
+
+    socket.on('msg-event', function(msg_content) {
+        console.log('Message:', msg_content.message, 'Target:', msg_content.target);
+        
+        // Add sender's socket ID to the message content
+        msg_content.sender = socket.id;
+
+        // Save the message to the array
+        messages.push(msg_content);
+
+        if (msg_content.target) {
+            console.log(`Sending message to target: ${msg_content.target}`);
+            socket.to(msg_content.target).emit('msg-event', msg_content);
         } else {
-            callback(new Error('Not allowed by CORS'));  // Deny the origin
+            console.log('Broadcasting message to all clients');
+            io.emit('msg-event', msg_content); // Send to all, including sender
         }
-    },
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    exposedHeaders: ["Access-Control-Allow-Origin"],
-    credentials: true  // Allow cookies & headers if needed
-}));
-
-app.use(express.json()); // ✅ Ensure JSON parsing
-
-// ✅ Custom Middleware (Extra Safety)
-app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", req.headers.origin || '*'); // Dynamically set the correct origin
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.header("Access-Control-Expose-Headers", "Access-Control-Allow-Origin");
-    next();
-});
-
-// Connect to MongoDB
-connectDB();
-
-// ✅ Define API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/rooms', roomRoutes);
-app.use('/api/messages', messageRoutes);
-
-// ✅ Setup Socket.io with CORS
-const io = new Server(server, {
-    cors: {
-        origin: "http://192.168.1.118:3000",
-        methods: ["GET", "POST"],
-        credentials: true
-    }
-});
-
-io.on('connection', (socket) => {
-    console.log('New client connected');
-
-    socket.on('joinRoom', (room) => {
-        socket.join(room);
-        console.log(`User joined room: ${room}`);
     });
-
-    socket.on('sendMessage', (message) => {
-        io.to(message.receiver).emit('receiveMessage', message);
-    });
-
-    socket.on('disconnect', () => {
-        console.log('Client disconnected');
-    });
-});
-
-// ✅ Start the server
-server.listen(3010, () => {
-    console.log(`Server running on port 3010`);
+    
 });

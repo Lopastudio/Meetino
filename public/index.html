@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Meetino</title>
+    <style>
+        .container {
+            width: 80%;
+            margin: 1rem auto;
+        }
+
+        .text-justify {
+            text-align: justify;
+        }
+
+        .messages {
+            border: 1px solid #ccc;
+            padding: 1rem;
+            height: 200px;
+            overflow-y: scroll;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="messages" id="messages"></div>
+        <center>
+            <p id="socket-id"></p>
+            <input type="text" id="msg" name="msg" placeholder="Enter message"><br><br>
+            <input type="text" id="msg_target" name="msg_target" placeholder="Enter target (optional)"><br><br>
+            <button id="msg_btn">Send</button>
+        </center>
+    </div>
+</body>
+
+<script src="/socket.io/socket.io.js"></script>
+
+<script>
+    var socket = io();
+    var msg_btn = document.getElementById('msg_btn');
+    var msg_input = document.getElementById('msg');
+    var msg_target = document.getElementById('msg_target');
+    var messages = document.getElementById('messages');
+    var socket_id = document.getElementById('socket-id');
+
+    function sendMessage() {
+        var msg = msg_input.value;
+        var target = msg_target ? msg_target.value : null;
+
+        if (msg.trim() !== "") {
+            socket.emit('msg-event', { message: msg, target: target });
+            msg_input.value = "";
+        }
+    }
+
+    msg_btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        sendMessage();
+    });
+
+    msg_input.addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    socket.on('msg-event', function (msg) {
+        console.log('Received message:', msg); // Debug log
+        var msgElement = document.createElement('div');
+        msgElement.textContent = `From ${msg.sender}: ${msg.message}`;
+        messages.appendChild(msgElement);
+    });
+
+    // Handle previous messages
+    socket.on('previous-messages', function (msgs) {
+        msgs.forEach(function (msg) {
+            var msgElement = document.createElement('div');
+            msgElement.textContent = `From ${msg.sender}: ${msg.message}`;
+            messages.appendChild(msgElement);
+        });
+    });
+
+    socket.on('connect', () => {
+        console.log('Connected to server! Socket ID:', socket.id);
+        socket_id.textContent = 'Socket ID: ' + socket.id;
+    });
+
+    socket.on('disconnect', () => {
+        console.log('Disconnected from server');
+    });
+</script>
+
+</html>
