@@ -17,9 +17,11 @@ const Profile = () => {
   const [friendUsername, setFriendUsername] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
+  const [messages, setMessages] = useState([]); // State to hold messages
 
   useEffect(() => {
     if (user) {
+      // Fetch initial profile data
       axios
         .get("http://localhost:3010/profile", {
           headers: {
@@ -32,15 +34,41 @@ const Profile = () => {
         .catch((error) => {
           console.error("Error fetching profile:", error);
         });
+
+      // Set the username for socket communication
+      socket.emit("set-username", user?.username);
+
+      // Load messages from localStorage if available
+      const cachedMessages = localStorage.getItem("messages");
+      if (cachedMessages) {
+        setMessages(JSON.parse(cachedMessages)); // Load cached messages into state
+      }
+
+      // Listen for new messages from the server
+      socket.on("msg-event", (message) => {
+        console.log("New message received:", message);
+
+        // Update state and cache the new message
+        setMessages((prevMessages) => {
+          const updatedMessages = [...prevMessages, message];
+          localStorage.setItem("messages", JSON.stringify(updatedMessages)); // Cache messages
+          return updatedMessages;
+        });
+      });
+
+      // Listen for previous messages from the server
+      socket.on("previous-messages", (messages) => {
+        setMessages(messages);
+        localStorage.setItem("messages", JSON.stringify(messages)); // Cache previous messages
+      });
     }
 
-    socket.emit("set-username", user?.username);
-
+    // Cleanup on unmount
     return () => {
-      socket.off("previous-messages");
       socket.off("msg-event");
+      socket.off("previous-messages");
     };
-  }, [user]);
+  }, [user]); // Ensure this runs when the user changes
 
   const handleChange = (e) => {
     const { name, value } = e.target;
