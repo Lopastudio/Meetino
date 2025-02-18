@@ -1,6 +1,8 @@
 import { useEffect, useState, useContext } from "react";
 import io from "socket.io-client";
 import { AuthContext } from "../contexts/AuthContext";
+import { ToastContainer, toast, Bounce } from "react-toastify";
+import 'react-toastify/dist/ReactToastify.css';
 
 const socket = io("http://localhost:3010");
 
@@ -18,6 +20,19 @@ const Chat = () => {
 
     socket.on("msg-event", (msg) => {
       setMessages((prev) => [...prev, msg]); // Add new messages to the state
+      if (msg.sender !== user?.username) {
+        toast(`${msg.sender}: ${msg.message}`, {
+          position: "top-right",
+          autoClose: 5000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+          progress: undefined,
+          theme: "light",
+          transition: Bounce,
+        });
+      }
     });
 
     socket.emit("set-username", user?.username);
@@ -35,25 +50,50 @@ const Chat = () => {
     }
   };
 
-  if (!user) return <p className="text-center mt-10 text-gray-500">Please log in to chat.</p>;
+  if (!user)
+    return (
+      <p className="text-center mt-10 text-gray-500">Please log in to chat.</p>
+    );
 
   return (
     <div className="container mx-auto mt-5 p-4 bg-gradient-to-br from-indigo-200 via-purple-200 to-pink-200 rounded-lg shadow-lg">
+      <ToastContainer
+        position="top-right"
+        autoClose={5000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick={false}
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="light"
+        transition={Bounce}
+      />
       <div className="border p-4 rounded-lg shadow-md h-60 overflow-y-scroll bg-white scrollbar-thin scrollbar-thumb-indigo-500 scrollbar-track-indigo-200">
         {messages.length === 0 ? (
-          <p className="text-center text-gray-500">No messages yet. Start chatting!</p>
+          <p className="text-center text-gray-500">
+            No messages yet. Start chatting!
+          </p>
         ) : (
           messages.map((msg, i) => (
             <div
               key={i}
-              className={`mb-4 p-3 rounded-lg max-w-xs ${msg.sender === user?.username ? "bg-blue-100 self-end" : "bg-gray-100"}`}
+              className={`mb-4 p-3 rounded-lg max-w-xs ${
+                msg.sender === user?.username
+                  ? "bg-blue-100 self-end"
+                  : "bg-gray-100"
+              }`}
               style={{
-                alignSelf: msg.sender === user?.username ? "flex-end" : "flex-start",
+                alignSelf:
+                  msg.sender === user?.username ? "flex-end" : "flex-start",
               }}
             >
               <p className="text-sm font-semibold text-gray-700">
                 <strong>{msg.sender}:</strong>
-                <span className="text-gray-500 text-xs ml-2">({msg.target && `Target: ${msg.target}`})</span>
+                <span className="text-gray-500 text-xs ml-2">
+                  ({msg.target && `Target: ${msg.target}`})
+                </span>
               </p>
               <p className="text-gray-800 mt-1">{msg.message}</p>
             </div>

@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect } from "react";
 import axios from "axios";
+import PropTypes from "prop-types";
 
 // Create context for authentication
 export const AuthContext = createContext();
@@ -35,7 +36,11 @@ export const AuthProvider = ({ children }) => {
       setUser({ username }); // Update user state (you can also store additional user data from the backend)
     } catch (error) {
       console.error("Login error:", error);
-    }
+  };
+  
+  AuthProvider.propTypes = {
+    children: PropTypes.node.isRequired,
+  };
   };
 
   // Logout function to clear token and user data

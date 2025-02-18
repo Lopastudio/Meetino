@@ -1,15 +1,26 @@
+/* eslint-disable no-unused-vars */
 import { useContext } from "react";
 import { Link } from "react-router-dom";
 import { AuthContext } from "../contexts/AuthContext";
+import { ToastContainer, toast } from "react-toastify";
 
 const Home = () => {
   const { user, logout } = useContext(AuthContext);
+//  const notify = () => toast("Wow so easy!");
 
   return (
     <div className="container mx-auto mt-10 p-6 bg-gradient-to-br from-indigo-200 via-purple-200 to-pink-200 rounded-lg shadow-lg">
-      <h1 className="text-4xl font-bold text-center text-indigo-700 mb-6">Welcome to Meetino</h1>
+      <div>
+        <ToastContainer />
+      </div>
+      <h1 className="text-4xl font-bold text-center text-indigo-700 mb-6">
+        Welcome to Meetino
+      </h1>
       <p className="text-center text-gray-700 mb-8">
-        bla bla bla nechce sa mi zatiaľ vymyšľať Lorem ipsum dolor sit amet consectetur adipisicing elit. Sint pariatur delectus beatae accusantium eveniet aliquid est hic voluptas quae corporis, reiciendis harum quam voluptatibus sed fugit earum dolor maxime dolore.
+        bla bla bla nechce sa mi zatiaľ vymyšľať Lorem ipsum dolor sit amet
+        consectetur adipisicing elit. Sint pariatur delectus beatae accusantium
+        eveniet aliquid est hic voluptas quae corporis, reiciendis harum quam
+        voluptatibus sed fugit earum dolor maxime dolore.
       </p>
       <div className="flex justify-center space-x-6">
         <Link

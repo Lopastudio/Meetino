@@ -1,8 +1,8 @@
 const express = require('express');
 require('dotenv').config();
 const app = express();
-const http = require('http').createServer(app);  // Create HTTP server
-const port = process.env.PORT || 3000;
+const http = require('http').createServer(app);
+const port = process.env.PORT || 3010;
 
 const bodyParser = require('body-parser');
 const bcrypt = require('bcrypt');
@@ -47,7 +47,6 @@ app.use(
   })
 );
 
-
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -75,7 +74,7 @@ async function connectToDatabase() {
 connectToDatabase();
 
 app.post('/setup-database', async (req, res) => {
-  const sql = `
+  const createUsersTable = `
     CREATE TABLE IF NOT EXISTS users (
       id INT(11) NOT NULL AUTO_INCREMENT,
       email VARCHAR(255) NOT NULL,
@@ -86,14 +85,27 @@ app.post('/setup-database', async (req, res) => {
       UNIQUE KEY (username)
     );
   `;
+
+  const createMessagesTable = `
+    CREATE TABLE IF NOT EXISTS messages (
+      id INT(11) NOT NULL AUTO_INCREMENT,
+      sender VARCHAR(191) NOT NULL,
+      message TEXT NOT NULL,
+      target VARCHAR(191),
+      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id)
+    );
+  `;
+
   let conn;
   try {
     conn = await pool.getConnection();
-    await conn.query(sql);
-    logger.info('Users table created!');
+    await conn.query(createUsersTable);
+    await conn.query(createMessagesTable);
+    logger.info('Users and messages tables created!');
     res.json({ message: 'Database tables created!' });
   } catch (err) {
-    logger.error('Error creating users table:', err);
+    logger.error('Error creating database tables:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
@@ -172,48 +184,123 @@ app.post('/login', async (req, res) => {
   }
 });
 
-
 // Route to add a friend to the user's favorites list
-app.post('/add-friend', authenticateToken, async (req, res) => {
-  const { friendUsername } = req.body;  // Username of the user to add as a friend
+app.post('/send-friend-request', authenticateToken, async (req, res) => {
+  const { friendUsername } = req.body;
   const username = req.user.username;
 
   let conn;
   try {
     conn = await pool.getConnection();
 
-    // Get the user to add as a friend
+    // Check if the friend exists
     const [friend] = await conn.query('SELECT id FROM users WHERE username = ?', [friendUsername]);
-
     if (friend.length === 0) {
       return res.status(404).json({ error: 'Friend not found' });
     }
 
-    // Get the current user's favorites (friends list)
-    const [user] = await conn.query('SELECT favorites FROM users WHERE username = ?', [username]);
-
-    if (user.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
+    // Check if a friend request already exists
+    const [existingRequest] = await conn.query(
+      'SELECT * FROM friend_requests WHERE sender = ? AND receiver = ?',
+      [username, friendUsername]
+    );
+    if (existingRequest.length > 0) {
+      return res.status(400).json({ error: 'Friend request already sent' });
     }
 
-    const favorites = user[0].favorites ? JSON.parse(user[0].favorites) : [];
+    // Insert friend request
+    await conn.query('INSERT INTO friend_requests (sender, receiver, status) VALUES (?, ?, "pending")',
+      [username, friendUsername]);
 
-    // Add the new friend to the favorites list if not already added
-    if (!favorites.includes(friendUsername)) {
-      favorites.push(friendUsername);
-    }
-
-    // Update the user's favorites list in the database
-    await conn.query('UPDATE users SET favorites = ? WHERE username = ?', [JSON.stringify(favorites), username]);
-
-    res.status(200).json({ message: 'Friend added successfully' });
+    res.status(200).json({ message: 'Friend request sent' });
   } catch (err) {
-    logger.error('Error adding friend:', err);
+    logger.error('Error sending friend request:', err);
     res.status(500).json({ error: 'Internal server error' });
   } finally {
     if (conn) conn.release();
   }
 });
+
+app.post('/accept-friend-request', authenticateToken, async (req, res) => {
+  const { senderUsername } = req.body;
+  const receiverUsername = req.user.username;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    // Check if there is a pending friend request
+    const [request] = await conn.query(
+      'SELECT * FROM friend_requests WHERE sender = ? AND receiver = ? AND status = "pending"',
+      [senderUsername, receiverUsername]
+    );
+
+    if (request.length === 0) {
+      return res.status(404).json({ error: 'Friend request not found' });
+    }
+
+    // Get current user's friends list
+    const [receiver] = await conn.query('SELECT favorites FROM users WHERE username = ?', [receiverUsername]);
+    const receiverFavorites = receiver[0].favorites ? JSON.parse(receiver[0].favorites) : [];
+
+    // Get sender's friends list
+    const [sender] = await conn.query('SELECT favorites FROM users WHERE username = ?', [senderUsername]);
+    const senderFavorites = sender[0].favorites ? JSON.parse(sender[0].favorites) : [];
+
+    // Add each other as friends
+    if (!receiverFavorites.includes(senderUsername)) receiverFavorites.push(senderUsername);
+    if (!senderFavorites.includes(receiverUsername)) senderFavorites.push(receiverUsername);
+
+    await conn.query('UPDATE users SET favorites = ? WHERE username = ?', [JSON.stringify(receiverFavorites), receiverUsername]);
+    await conn.query('UPDATE users SET favorites = ? WHERE username = ?', [JSON.stringify(senderFavorites), senderUsername]);
+
+    // Mark request as accepted
+    await conn.query('UPDATE friend_requests SET status = "accepted" WHERE sender = ? AND receiver = ?',
+      [senderUsername, receiverUsername]);
+
+    res.status(200).json({ message: 'Friend request accepted' });
+  } catch (err) {
+    logger.error('Error accepting friend request:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
+
+app.get('/profile/:id', async (req, res) => {
+  const { id } = req.params;
+
+  let conn;
+  try {
+    conn = await pool.getConnection();
+
+    const userResult = await conn.query(
+      'SELECT id, username, bio, profile_picture_url, favorites FROM users WHERE id = ?',
+      [id]
+    );
+
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult[0];
+    const favorites = user.favorites ? JSON.parse(user.favorites) : [];
+
+    res.status(200).json({
+      username: user.username,
+      bio: user.bio || '',
+      profile_picture_url: user.profile_picture_url || '',
+      favorites,
+    });
+  } catch (err) {
+    logger.error('Error fetching profile:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    if (conn) conn.release();
+  }
+});
+
 
 // Route to search for users by username
 app.get('/search-users', authenticateToken, async (req, res) => {
@@ -267,7 +354,7 @@ app.put('/profile', authenticateToken, async (req, res) => {
       SET bio = ?, profile_picture_url = ?
       WHERE id = ?
     `;
-    const values = [bio, profile_picture_url, userId]; 
+    const values = [bio, profile_picture_url, userId];
 
     await conn.query(sql, values);
 
@@ -279,50 +366,6 @@ app.put('/profile', authenticateToken, async (req, res) => {
     if (conn) conn.release();
   }
 });
-
-
-
-// Assuming you have a function to handle adding friends
-app.put('/add-friend', authenticateToken, async (req, res) => {
-  const { friendUsername } = req.body; // Friend username to add
-  const username = req.user.username;
-
-  let conn;
-  try {
-    conn = await pool.getConnection();
-    const userResult = await conn.query('SELECT id, favorites FROM users WHERE username = ?', [username]);
-
-    if (userResult.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userId = userResult[0].id;
-    let favorites = userResult[0].favorites || '[]';  // Ensure it's initialized as an empty array if undefined
-
-    const friendResult = await conn.query('SELECT id FROM users WHERE username = ?', [friendUsername]);
-    if (friendResult.length === 0) {
-      return res.status(404).json({ error: 'Friend not found' });
-    }
-
-    // Add friend to favorites (if not already added)
-    const favoriteList = JSON.parse(favorites);
-    if (!favoriteList.includes(friendUsername)) {
-      favoriteList.push(friendUsername);
-    }
-
-    favorites = JSON.stringify(favoriteList);  // Convert back to string for storage
-
-    await conn.query('UPDATE users SET favorites = ? WHERE id = ?', [favorites, userId]);
-
-    res.status(200).json({ message: 'Friend added successfully' });
-  } catch (err) {
-    logger.error('Error adding friend:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  } finally {
-    if (conn) conn.release();
-  }
-});
-
 
 // Route to get the user's profile
 app.get('/profile', authenticateToken, async (req, res) => {
@@ -357,7 +400,6 @@ app.get('/profile', authenticateToken, async (req, res) => {
     if (conn) conn.release();
   }
 });
-
 
 // Auth route to validate the JWT token
 app.get('/auth', authenticateToken, (req, res) => {
@@ -444,4 +486,42 @@ io.on('connection', function (socket) {
     delete socketUserMap[socket.id]; // Remove the user from the map
   });
 });
+
+// Save messages to the database every minute
+setInterval(async () => {
+  if (messages.length > 0) {
+    let conn;
+    try {
+      conn = await pool.getConnection();
+      const sql = 'INSERT INTO messages (sender, message, target) VALUES (?, ?, ?)';
+      const values = messages.map(msg => [msg.sender, msg.message, msg.target]);
+      await conn.batch(sql, values);
+      messages = []; // Clear the messages array after saving to the database
+      logger.info('Messages saved to the database');
+    } catch (err) {
+      logger.error('Error saving messages to the database:', err);
+    } finally {
+      if (conn) conn.release();
+    }
+  }
+}, 60000); // Save messages every 60 seconds
+
+// Load messages from the database when the server starts
+(async () => {
+  let conn;
+  try {
+    conn = await pool.getConnection();
+    const result = await conn.query('SELECT sender, message, target FROM messages ORDER BY timestamp ASC');
+    messages = result.map(row => ({
+      sender: row.sender,
+      message: row.message,
+      target: row.target,
+    }));
+    logger.info('Messages loaded from the database');
+  } catch (err) {
+    logger.error('Error loading messages from the database:', err);
+  } finally {
+    if (conn) conn.release();
+  }
+})();
 
